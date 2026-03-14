@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi Gateway (Discord/Slack bridge)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/pi-gateway
+ExecStart=/opt/pi-gateway/scripts/gateway-daemon.sh run
+ExecStop=/opt/pi-gateway/scripts/gateway-daemon.sh stop
+ExecReload=/opt/pi-gateway/scripts/gateway-daemon.sh restart
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

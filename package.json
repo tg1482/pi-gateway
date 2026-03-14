@@ -1,0 +1,30 @@
+{
+  "name": "pi-gateway",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pi-gateway-daemon": "./bin/pi-gateway-daemon.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "scripts": {
+    "start": "node ./bin/pi-gateway-daemon.mjs",
+    "daemon:start": "./scripts/gateway-daemon.sh start",
+    "daemon:stop": "./scripts/gateway-daemon.sh stop",
+    "daemon:restart": "./scripts/gateway-daemon.sh restart",
+    "daemon:status": "./scripts/gateway-daemon.sh status",
+    "daemon:logs": "./scripts/gateway-daemon.sh logs",
+    "install:systemd": "./scripts/install-systemd.sh",
+    "test": "node -e \"console.log('no tests yet')\""
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "@sinclair/typebox": "^0.34.41",
+    "@slack/bolt": "^4.6.0",
+    "discord.js": "^14.25.1"
+  }
+}
