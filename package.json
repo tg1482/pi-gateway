@@ -25,6 +25,7 @@
     "@mariozechner/pi-coding-agent": "^0.57.1",
     "@sinclair/typebox": "^0.34.41",
     "@slack/bolt": "^4.6.0",
+    "croner": "^8.1.2",
     "discord.js": "^14.25.1"
   }
 }

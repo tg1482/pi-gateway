@@ -42,6 +42,11 @@ export class RouteSessionHost {
     this.journal = options.journal;
     this.logger = options.logger;
     this.uploadFile = options.uploadFile;
+    this.scheduleEvent = options.scheduleEvent;
+    this.listEvents = options.listEvents;
+    this.cancelEvent = options.cancelEvent;
+    this.routeKey = options.routeKey;
+    this.eventsDir = options.eventsDir;
     this.session = undefined;
     this.sessionPromise = undefined;
   }
@@ -82,6 +87,11 @@ export class RouteSessionHost {
         createRouteSessionExtension({
           getInjectedContext: () => buildInjectedContext(this.manifest.memoryPath, this.manifest.executionRoot, this.journal),
           uploadFile: this.uploadFile,
+          scheduleEvent: this.scheduleEvent,
+          listEvents: this.listEvents,
+          cancelEvent: this.cancelEvent,
+          routeKey: this.routeKey,
+          eventsDir: this.eventsDir,
         }),
       ],
     });

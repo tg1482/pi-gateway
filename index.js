@@ -135,6 +135,8 @@ export default function (pi) {
           daemon.status?.phase ? `Phase: ${daemon.status.phase}` : undefined,
           daemon.status?.routeCount != null ? `Routes: ${daemon.status.routeCount}` : undefined,
           daemon.status?.activeRuns?.length ? `Active: ${daemon.status.activeRuns.join(", ")}` : undefined,
+          daemon.status?.scheduledEvents != null ? `Scheduled events: ${daemon.status.scheduledEvents}` : undefined,
+          `Scheduler: ${config.scheduler?.enabled === false ? "disabled" : "enabled"}`,
           `Discord: ${config.transports.discord.enabled ? "enabled" : "disabled"}`,
           `Slack: ${config.transports.slack.enabled ? "enabled" : "disabled"}`,
           validation.errors.length ? `Config errors: ${validation.errors.join("; ")}` : undefined,

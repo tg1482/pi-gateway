@@ -1,8 +1,8 @@
 import path from "node:path";
-import { writeFile, readFile } from "node:fs/promises";
+import { writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { DiscordTransport } from "../transports/discord.js";
 import { SlackTransport } from "../transports/slack.js";
-import { ensureDir, pathExists, writeJson } from "../lib/fs.js";
+import { ensureDir, pathExists, readJson, sanitizeSegment, writeJson } from "../lib/fs.js";
 import { getRoutePaths } from "../lib/paths.js";
 import { RouteRegistry, createRouteManifest } from "./registry.js";
 import { RouteQueueStore } from "./queue-store.js";
@@ -10,6 +10,7 @@ import { JournalStore } from "./journal.js";
 import { Logger } from "./logger.js";
 import { RouteSessionHost } from "./session-host.js";
 import { makeRouteKey } from "./route-key.js";
+import { RouteEventsWatcher } from "./events-watcher.js";
 
 function buildPromptText(input) {
   const parts = [
@@ -57,6 +58,7 @@ export class PiGatewayDaemon {
     this.heartbeat = undefined;
     this.status = {};
     this.stopping = false;
+    this.eventsWatcher = undefined;
   }
 
   async start() {
@@ -73,6 +75,7 @@ export class PiGatewayDaemon {
     }, 15000);
 
     await this.recoverRoutes();
+    await this.startEventsWatcher();
     await this.scheduleWork();
     await this.writeStatus({ phase: "ready" });
   }
@@ -193,6 +196,146 @@ export class PiGatewayDaemon {
     await this.scheduleWork();
   }
 
+  async startEventsWatcher() {
+    if (this.config.scheduler?.enabled === false) return;
+
+    this.eventsWatcher = new RouteEventsWatcher({
+      paths: this.paths,
+      registry: this.registry,
+      logger: this.logger,
+      intervalMs: this.config.scheduler?.pollIntervalMs || 10000,
+      onFire: async (event) => {
+        await this.handleScheduledEvent(event);
+      },
+    });
+    await this.eventsWatcher.start();
+  }
+
+  async handleScheduledEvent(event) {
+    const summary = this.registry.list().find((route) => route.routeKey === event.routeKey);
+    if (!summary) throw new Error(`Unknown route key for scheduled event: ${event.routeKey}`);
+
+    const context = await this.ensureRoute({
+      routeKey: summary.routeKey,
+      scope: summary.scope,
+      platform: summary.platform,
+    });
+
+    if (context.journal.hasSource(event.sourceId) || context.queue.hasSource(event.sourceId)) return;
+
+    const promptText = [
+      `[schedule] route=${event.routeKey}`,
+      `Type: ${event.type}`,
+      `Event ID: ${event.eventId}`,
+      "",
+      event.text,
+    ].join("\n");
+
+    await context.journal.append({
+      kind: "scheduled-trigger",
+      routeKey: event.routeKey,
+      sourceId: event.sourceId,
+      timestamp: Date.now(),
+      text: event.text,
+      eventId: event.eventId,
+      eventType: event.type,
+      deliver: event.deliver,
+    });
+
+    const item = await context.queue.enqueue({
+      source: {
+        kind: "scheduled",
+        sourceId: event.sourceId,
+        eventId: event.eventId,
+        eventType: event.type,
+        deliver: event.deliver,
+      },
+      payload: {
+        rawText: event.text,
+        promptText,
+        attachments: [],
+      },
+    });
+
+    await this.logger.info("route-scheduled-queued", { routeKey: event.routeKey, eventId: event.eventId, itemId: item.id });
+    await this.scheduleWork();
+  }
+
+  async createRouteEvent(routeKey, input) {
+    const summary = this.registry.list().find((route) => route.routeKey === routeKey);
+    if (!summary) throw new Error(`Route not found: ${routeKey}`);
+
+    const routePaths = getRoutePaths(this.paths, routeKey);
+    await ensureDir(routePaths.eventsDir);
+
+    const id = sanitizeSegment(input.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    const fileName = `${id}.json`;
+    const filePath = path.join(routePaths.eventsDir, fileName);
+
+    const type = input.type;
+    if (!["immediate", "one-shot", "periodic"].includes(type)) {
+      throw new Error("type must be one of: immediate, one-shot, periodic");
+    }
+
+    const text = String(input.text || "").trim();
+    if (!text) throw new Error("text is required");
+
+    const event = {
+      type,
+      text,
+      enabled: input.enabled !== false,
+      deliver: input.deliver === "silent" ? "silent" : "post",
+    };
+
+    if (event.type === "one-shot") {
+      if (!input.at || !Number.isFinite(Date.parse(input.at))) {
+        throw new Error("one-shot events require valid 'at' ISO timestamp");
+      }
+      event.at = input.at;
+    }
+
+    if (event.type === "periodic") {
+      if (!input.schedule || !String(input.schedule).trim()) {
+        throw new Error("periodic events require non-empty 'schedule'");
+      }
+      event.schedule = String(input.schedule).trim();
+      event.timezone = String(input.timezone || "UTC").trim() || "UTC";
+    }
+
+    await writeJson(filePath, event);
+    await this.eventsWatcher?.sync();
+
+    return { id, filePath, event };
+  }
+
+  async listRouteEvents(routeKey) {
+    const routePaths = getRoutePaths(this.paths, routeKey);
+    await ensureDir(routePaths.eventsDir);
+
+    const files = (await readdir(routePaths.eventsDir)).filter((name) => name.endsWith(".json")).sort();
+    const events = [];
+    for (const fileName of files) {
+      const filePath = path.join(routePaths.eventsDir, fileName);
+      const event = await readJson(filePath, null);
+      if (!event) continue;
+      events.push({
+        id: path.basename(fileName, ".json"),
+        filePath,
+        event,
+      });
+    }
+    return events;
+  }
+
+  async deleteRouteEvent(routeKey, id) {
+    const routePaths = getRoutePaths(this.paths, routeKey);
+    const safeId = sanitizeSegment(id);
+    const filePath = path.join(routePaths.eventsDir, `${safeId}.json`);
+    await rm(filePath, { force: true });
+    await this.eventsWatcher?.sync();
+    return { id: safeId, removed: true };
+  }
+
   async saveInboundAttachments(context, event) {
     const incoming = Array.isArray(event.attachments) ? event.attachments : [];
     if (!incoming.length) return [];
@@ -283,6 +426,7 @@ export class PiGatewayDaemon {
     await ensureDir(routePaths.routeDir);
     await ensureDir(routePaths.sessionsDir);
     await ensureDir(routePaths.inboundAttachmentsDir);
+    await ensureDir(routePaths.eventsDir);
 
     const dailyDir = path.join(manifest.executionRoot, "MEMORY_DAILY");
     await ensureDir(dailyDir);
@@ -311,6 +455,11 @@ export class PiGatewayDaemon {
         if (!transport) throw new Error(`Transport ${manifest.platform} not available`);
         return transport.uploadFile(manifest.primaryMessageRef || { channelId: manifest.scope.channelId, threadId: manifest.scope.threadId }, filePath, options);
       },
+      scheduleEvent: async (input) => this.createRouteEvent(manifest.routeKey, input),
+      listEvents: async () => this.listRouteEvents(manifest.routeKey),
+      cancelEvent: async (id) => this.deleteRouteEvent(manifest.routeKey, id),
+      routeKey: manifest.routeKey,
+      eventsDir: routePaths.eventsDir,
     });
 
     const context = {
@@ -382,8 +531,11 @@ export class PiGatewayDaemon {
       const transport = this.transports.get(context.manifest.platform);
       if (!transport) throw new Error(`Transport unavailable: ${context.manifest.platform}`);
 
+      const sourceKind = item.source?.kind || "message";
+      const isScheduled = sourceKind === "scheduled";
+
       const messageRef = context.manifest.primaryMessageRef;
-      if (messageRef?.messageId) {
+      if (!isScheduled && messageRef?.messageId) {
         await transport.updateText(context.routeRef, messageRef.messageId, "Running...");
       }
 
@@ -431,7 +583,14 @@ export class PiGatewayDaemon {
         text: finalAssistantText,
       });
 
-      if (messageRef?.messageId) {
+      const silent = finalAssistantText.trim() === "[SILENT]" || finalAssistantText.trim().startsWith("[SILENT]");
+      const deliverMode = item.source?.deliver === "silent" ? "silent" : "post";
+
+      if (isScheduled) {
+        if (deliverMode !== "silent" && !silent) {
+          await transport.sendText(context.routeRef, finalAssistantText || "Done.");
+        }
+      } else if (messageRef?.messageId) {
         await transport.updateText(context.routeRef, messageRef.messageId, finalAssistantText || "Done.");
       } else {
         await transport.sendText(context.routeRef, finalAssistantText || "Done.");
@@ -450,7 +609,13 @@ export class PiGatewayDaemon {
 
       const transport = this.transports.get(context.manifest.platform);
       const messageRef = context.manifest.primaryMessageRef;
-      if (transport && messageRef?.messageId) {
+      const isScheduled = item.source?.kind === "scheduled";
+      if (transport && isScheduled) {
+        if (item.source?.deliver !== "silent") {
+          const msg = nextState === "cancelled" ? "Scheduled run stopped." : `Scheduled run error: ${text}`;
+          await transport.sendText(context.routeRef, msg).catch(() => undefined);
+        }
+      } else if (transport && messageRef?.messageId) {
         const msg = nextState === "cancelled" ? "Run stopped." : `Error: ${text}`;
         await transport.updateText(context.routeRef, messageRef.messageId, msg).catch(() => undefined);
       }
@@ -467,6 +632,7 @@ export class PiGatewayDaemon {
       pid: process.pid,
       routeCount: this.registry.list().length,
       activeRuns: [...this.currentRuns.keys()],
+      scheduledEvents: this.eventsWatcher?.getScheduledCount?.() || 0,
     };
     await writeJson(this.paths.statusPath, this.status);
   }
@@ -474,6 +640,7 @@ export class PiGatewayDaemon {
   async stop() {
     this.stopping = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.eventsWatcher) await this.eventsWatcher.stop().catch(() => undefined);
 
     for (const active of this.currentRuns.values()) {
       await active.abort().catch(() => undefined);

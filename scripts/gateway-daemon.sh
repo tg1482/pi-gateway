@@ -37,6 +37,7 @@ load_env() {
 
   # Optional model override
   if [[ -n "${PI_GATEWAY_DEFAULT_MODEL:-}" && -f "$WORKSPACE/config.json" ]]; then
+    export WORKSPACE
     python3 - <<'PY'
 import json, os
 from pathlib import Path

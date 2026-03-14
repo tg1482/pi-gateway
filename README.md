@@ -22,6 +22,7 @@ This is an initial working skeleton. It includes:
 - per-route session execution roots under `~/.pi/agent/pi-gateway/workspaces`
 - inbound attachment download + prompt context injection
 - route memory files: `MEMORY.md` + `MEMORY_DAILY/YYYY-MM-DD.md`
+- route-local scheduler events (`immediate`, `one-shot`, `periodic cron`)
 
 ## Install locally
 
@@ -46,6 +47,36 @@ Restart Pi, then:
 ## Config path
 
 `~/.pi/agent/pi-gateway/config.json`
+
+## Route scheduler (cron / future jobs)
+
+Each route has an events directory:
+
+`~/.pi/agent/pi-gateway/routes/<route-slug>/events/*.json`
+
+Supported event types:
+
+- `immediate`
+- `one-shot` (`at` ISO datetime)
+- `periodic` (`schedule` cron + optional `timezone`)
+
+From a route session, Pi can use tools:
+
+- `gateway_schedule_create`
+- `gateway_schedule_list`
+- `gateway_schedule_cancel`
+
+Example periodic event JSON:
+
+```json
+{
+  "type": "periodic",
+  "text": "Check open PRs and post a summary.",
+  "schedule": "0 9 * * 1-5",
+  "timezone": "America/Chicago",
+  "deliver": "post"
+}
+```
 
 ## Production daemon startup (Hetzner / server)
 
