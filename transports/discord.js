@@ -1,7 +1,35 @@
 import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
 
+const DISCORD_CONTENT_LIMIT = 4000;
+const DISCORD_SAFE_LIMIT = 3900;
+
 function stripBotMention(content, botId) {
   return content.replace(new RegExp(`<@!?${botId}>`, "g"), "").trim();
+}
+
+function clampText(text, limit = DISCORD_SAFE_LIMIT) {
+  const value = String(text ?? "");
+  if (value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit - 14))}\n\n[truncated]`;
+}
+
+function splitText(text, limit = DISCORD_SAFE_LIMIT) {
+  const value = String(text ?? "");
+  if (!value) return [""];
+  if (value.length <= limit) return [value];
+
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > limit) {
+    let idx = remaining.lastIndexOf("\n\n", limit);
+    if (idx < Math.floor(limit * 0.6)) idx = remaining.lastIndexOf("\n", limit);
+    if (idx < Math.floor(limit * 0.6)) idx = remaining.lastIndexOf(" ", limit);
+    if (idx <= 0) idx = limit;
+    chunks.push(remaining.slice(0, idx).trim());
+    remaining = remaining.slice(idx).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
 export class DiscordTransport {
@@ -100,12 +128,17 @@ export class DiscordTransport {
     const channel = await this.client.channels.fetch(targetId);
     if (!channel || !("send" in channel)) throw new Error(`Discord channel not writable: ${targetId}`);
 
-    const msg = await channel.send({
-      content: text,
-      allowedMentions: { parse: [] },
-    });
+    const parts = splitText(text, DISCORD_SAFE_LIMIT);
+    let first;
+    for (const part of parts) {
+      const msg = await channel.send({
+        content: clampText(part, DISCORD_CONTENT_LIMIT),
+        allowedMentions: { parse: [] },
+      });
+      if (!first) first = msg;
+    }
 
-    return { messageRef: { channelId: routeRef.channelId, threadId: routeRef.threadId, messageId: msg.id } };
+    return { messageRef: first ? { channelId: routeRef.channelId, threadId: routeRef.threadId, messageId: first.id } : undefined };
   }
 
   async updateText(routeRef, messageId, text) {
@@ -114,7 +147,7 @@ export class DiscordTransport {
     if (!channel || !("messages" in channel)) return { ok: false };
     try {
       const msg = await channel.messages.fetch(messageId);
-      await msg.edit({ content: text });
+      await msg.edit({ content: clampText(text, DISCORD_CONTENT_LIMIT) });
       return { ok: true };
     } catch {
       return { ok: false };
@@ -125,7 +158,7 @@ export class DiscordTransport {
     const targetId = routeRef.threadId ?? routeRef.channelId;
     const channel = await this.client.channels.fetch(targetId);
     if (!channel || !("send" in channel)) throw new Error(`Discord channel not writable: ${targetId}`);
-    const msg = await channel.send({ content: options.title || undefined, files: [filePath] });
+    const msg = await channel.send({ content: options.title ? clampText(options.title, DISCORD_CONTENT_LIMIT) : undefined, files: [filePath] });
     return { messageId: msg.id };
   }
 }
