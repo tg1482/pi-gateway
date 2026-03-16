@@ -591,7 +591,10 @@ export class PiGatewayDaemon {
           await transport.sendText(context.routeRef, finalAssistantText || "Done.");
         }
       } else if (messageRef?.messageId) {
-        await transport.updateText(context.routeRef, messageRef.messageId, finalAssistantText || "Done.");
+        const updated = await transport.updateText(context.routeRef, messageRef.messageId, finalAssistantText || "Done.");
+        if (!updated?.ok) {
+          await transport.sendText(context.routeRef, finalAssistantText || "Done.");
+        }
       } else {
         await transport.sendText(context.routeRef, finalAssistantText || "Done.");
       }
@@ -617,7 +620,10 @@ export class PiGatewayDaemon {
         }
       } else if (transport && messageRef?.messageId) {
         const msg = nextState === "cancelled" ? "Run stopped." : `Error: ${text}`;
-        await transport.updateText(context.routeRef, messageRef.messageId, msg).catch(() => undefined);
+        const updated = await transport.updateText(context.routeRef, messageRef.messageId, msg).catch(() => ({ ok: false }));
+        if (!updated?.ok) {
+          await transport.sendText(context.routeRef, msg).catch(() => undefined);
+        }
       }
     } finally {
       if (heartbeat) clearInterval(heartbeat);
